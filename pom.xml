@@ -178,6 +178,11 @@
       <artifactId>testcontainers-mysql</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.seleniumhq.selenium</groupId>
+      <artifactId>selenium-java</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -310,6 +315,22 @@
         <groupId>org.cyclonedx</groupId>
         <artifactId>cyclonedx-maven-plugin</artifactId>
       </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-pmd-plugin</artifactId>
+        <version>3.28.0</version>
+        <configuration>
+          <targetJdk>17</targetJdk>
+          <includeTests>false</includeTests>
+          <linkXRef>false</linkXRef>
+          <rulesets>
+            <ruleset>tests/ci/pmd-ruleset.xml</ruleset>
+          </rulesets>
+          <failurePriority>3</failurePriority>
+          <failOnViolation>true</failOnViolation>
+          <printFailingErrors>true</printFailingErrors>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
   <licenses>
@@ -438,3 +459,4 @@
     </profile>
   </profiles>
 </project>
+

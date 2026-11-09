@@ -1,0 +1,98 @@
+name: CI Testes e Quality Gate
+
+on:
+  push:
+    branches: [ main, codex/fechamento-avaliacao2 ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validacao:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+      - name: Preparar dependencias, cobertura e formatacao
+        run: |
+          mkdir -p resultados evidencias/fechamento-20261109
+          python3 tests/preparar-pom.py
+          ./mvnw -B spring-javaformat:apply
+      - name: Executar Maven e preservar a falha de negocio
+        continue-on-error: true
+        run: |
+          set +e
+          ./mvnw -B verify -Dmaven.test.failure.ignore=true > evidencias/fechamento-20261109/maven.log 2>&1
+          echo $? > resultados/maven.exitcode
+          tail -50 evidencias/fechamento-20261109/maven.log
+      - name: Analise estatica PMD
+        continue-on-error: true
+        run: |
+          set +e
+          ./mvnw -B org.apache.maven.plugins:maven-pmd-plugin:3.28.0:pmd > evidencias/fechamento-20261109/pmd.log 2>&1
+          echo $? > resultados/pmd.exitcode
+          tail -35 evidencias/fechamento-20261109/pmd.log
+      - name: Iniciar aplicacao local
+        run: |
+          nohup java -jar target/spring-petclinic-4.0.0-SNAPSHOT.jar > evidencias/fechamento-20261109/app.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -fsS localhost:8080/actuator/health | grep -q UP; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Selenium
+        continue-on-error: true
+        run: |
+          set +e
+          ./mvnw -B test -Dtest='*E2E' -Dsurefire.failIfNoSpecifiedTests=false -Dmaven.test.failure.ignore=true > evidencias/fechamento-20261109/selenium.log 2>&1
+          echo $? > resultados/selenium.exitcode
+          tail -30 evidencias/fechamento-20261109/selenium.log
+      - name: Newman
+        continue-on-error: true
+        run: |
+          set +e
+          npx --yes newman run tests/postman/petclinic.postman_collection.json --reporters cli,json --reporter-json-export resultados/newman.json > evidencias/fechamento-20261109/newman.log 2>&1
+          echo $? > resultados/newman.exitcode
+          tail -25 evidencias/fechamento-20261109/newman.log
+      - name: Carga adicional com CPU e memoria
+        continue-on-error: true
+        run: |
+          chmod 777 resultados
+          python3 tests/performance/monitorar-recursos.py --pid "$APP_PID" --output resultados/recursos.csv &
+          MONITOR_PID=$!
+          trap 'kill "$MONITOR_PID" 2>/dev/null || true' EXIT
+          set +e
+          docker run --rm -i --network host -v "$PWD/resultados":/resultados grafana/k6 run --summary-trend-stats='avg,min,med,max,p(90),p(95),p(99)' --summary-export=/resultados/k6-monitorado.json - < tests/k6/carga.js > evidencias/fechamento-20261109/k6-monitorado.log 2>&1
+          echo $? > resultados/k6.exitcode
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
+          tail -35 evidencias/fechamento-20261109/k6-monitorado.log
+      - name: Avaliar criterios e reprovar quando houver falha
+        if: always()
+        run: python3 tests/ci/avaliar-gate.py | tee resultados/gate-console.log
+      - name: Publicar evidencias mesmo com gate reprovado
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fechamento-avaliacao2
+          path: |
+            resultados/
+            evidencias/fechamento-20261109/
+            target/pmd.xml
+            target/site/pmd.html
+            target/site/jacoco/
+            target/surefire-reports/
+            target/evidencias/
+          retention-days: 90

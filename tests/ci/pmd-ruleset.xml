@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="PetClinic error prone and security"
+ xmlns="http://pmd.sourceforge.net/ruleset/2.0.0">
+ <description>Production Java code: error-prone constructs and security rules. Priorities 1 to 3 block CI.</description>
+ <rule ref="category/java/errorprone.xml"/>
+ <rule ref="category/java/security.xml"/>
+</ruleset>
