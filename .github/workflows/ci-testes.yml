@@ -78,6 +78,7 @@ jobs:
           echo $? > resultados/k6.exitcode
           kill "$MONITOR_PID" 2>/dev/null || true
           wait "$MONITOR_PID" 2>/dev/null || true
+          python3 tests/performance/resumir-recursos.py --input resultados/recursos.csv --k6 resultados/k6-monitorado.json --output resultados/recursos-resumo.json
           tail -35 evidencias/fechamento-20261109/k6-monitorado.log
       - name: Avaliar criterios e reprovar quando houver falha
         if: always()

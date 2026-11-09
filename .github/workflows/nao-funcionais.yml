@@ -1,0 +1,45 @@
+name: Carga e Seguranca
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'   # segundas-feiras, 03h no horario de Brasilia
+
+jobs:
+  carga-e-seguranca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+      - name: Subir a aplicacao
+        run: |
+          ./mvnw -B -DskipTests package
+          java -jar target/*.jar > app.log 2>&1 &
+          for i in $(seq 1 60); do curl -s localhost:8080/actuator/health | grep -q UP && break; sleep 2; done
+      - name: Teste de carga (k6)
+        run: |
+          mkdir -p resultados && chmod 777 resultados
+          docker run --rm -i --network host -v "$(pwd)/resultados":/resultados grafana/k6 \
+            run --summary-export=/resultados/k6-resumo.json - < tests/k6/carga.js
+      - name: Evidencias CT09 e CT10
+        if: always()
+        run: bash tests/seguranca/coletar-evidencias.sh ci
+      - name: Varredura de seguranca (ZAP baseline)
+        if: always()
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host -v "$(pwd)/zap":/zap/wrk:rw -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:8080 -r zap-baseline.html -I
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorios-nao-funcionais
+          path: |
+            resultados/
+            zap/
+            evidencias/
+            app.log

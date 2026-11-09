@@ -1,10 +1,8 @@
 name: Evidencias automatico (rodada 2)
 
 # Roda tudo de uma vez e entrega os prints, os relatorios e um resumo com os numeros.
-# Comeca sozinha quando este arquivo e salvo (commit na branch main).
+# Coleta completa manual; o CI com gate real esta em ci-testes.yml.
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
