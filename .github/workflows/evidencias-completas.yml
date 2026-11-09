@@ -1,0 +1,110 @@
+name: Evidencias completas (rodada 2)
+
+# Roda tudo de uma vez e entrega os prints, os relatorios e um resumo com os numeros.
+# Como usar: aba Actions > "Evidencias completas (rodada 2)" > Run workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  evidencias:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Preparar o projeto (Selenium, regra de cobertura e formatacao)
+        run: |
+          python3 tests/preparar-pom.py
+          ./mvnw -B spring-javaformat:apply
+          mkdir -p evidencias zap resultados
+          chmod 777 zap resultados
+
+      - name: 1. Testes unitarios e de integracao, com cobertura (Maven)
+        continue-on-error: true
+        run: ./mvnw -B verify -Dmaven.test.failure.ignore=true 2>&1 | tee evidencias/maven-verify.log
+
+      - name: 2. Subir a aplicacao (java -jar)
+        run: |
+          JAR=$(ls target/*.jar | grep -v original | head -1)
+          echo "Usando $JAR"
+          nohup java -jar "$JAR" > evidencias/app-jar.log 2>&1 &
+          for i in $(seq 1 90); do curl -s localhost:8080/actuator/health | grep -q UP && break; sleep 2; done
+          curl -s localhost:8080/actuator/health
+
+      - name: 3. Testes de API (Newman, CT08)
+        continue-on-error: true
+        run: npx --yes newman run tests/postman/petclinic.postman_collection.json 2>&1 | tee evidencias/newman.log
+
+      - name: 4. Testes de navegador (Selenium, CT01, CT05 e CT06)
+        continue-on-error: true
+        run: ./mvnw -B test -Dtest='*E2E' -Dsurefire.failIfNoSpecifiedTests=false -Dmaven.test.failure.ignore=true 2>&1 | tee evidencias/selenium.log
+
+      - name: 5. Evidencias de seguranca (CT09 e CT10, modo java -jar)
+        continue-on-error: true
+        run: bash tests/seguranca/coletar-evidencias.sh jar
+
+      - name: 6. Teste de carga (k6, 3 execucoes) e de estresse
+        continue-on-error: true
+        run: |
+          set +e
+          for i in 1 2 3; do
+            docker run --rm -i --network host -v "$PWD/resultados":/resultados grafana/k6 run \
+              --summary-trend-stats="avg,min,med,max,p(90),p(95),p(99)" \
+              --summary-export=/resultados/k6-carga-$i.json - < tests/k6/carga.js 2>&1 | tee evidencias/k6-carga-$i.log
+          done
+          docker run --rm -i --network host -v "$PWD/resultados":/resultados grafana/k6 run \
+            --stage 2m:200 --stage 2m:200 --stage 30s:0 \
+            --summary-trend-stats="avg,min,med,max,p(90),p(95),p(99)" \
+            --summary-export=/resultados/k6-estresse.json - < tests/k6/carga.js 2>&1 | tee evidencias/k6-estresse.log
+
+      - name: 7. Varredura de seguranca (OWASP ZAP, baseline e full scan)
+        continue-on-error: true
+        run: |
+          set +e
+          docker run --rm --network host -v "$PWD/zap":/zap/wrk:rw ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:8080 -r zap-baseline.html -J zap-baseline.json -I
+          docker run --rm --network host -v "$PWD/zap":/zap/wrk:rw ghcr.io/zaproxy/zaproxy:stable \
+            zap-full-scan.py -t http://localhost:8080 -m 2 -r zap-full.html -J zap-full.json -I
+
+      - name: 8. Repetir CT09 e CT10 no modo DevTools
+        continue-on-error: true
+        run: |
+          pkill -f "target/.*petclinic" || true
+          sleep 5
+          nohup ./mvnw -B spring-boot:run > evidencias/app-devtools.log 2>&1 &
+          for i in $(seq 1 150); do curl -s localhost:8080/actuator/health | grep -q UP && break; sleep 2; done
+          bash tests/seguranca/coletar-evidencias.sh devtools
+          pkill -f "spring-boot:run" || true
+          pkill -f "PetClinicApplication" || true
+
+      - name: 9. Resumo com os numeros e a lista de prints
+        if: always()
+        run: python3 tests/relatorio/resumo.py | tee evidencias/RESUMO.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 10. Reunir tudo para download
+        if: always()
+        run: |
+          mkdir -p pacote/evidencias-rodada-2
+          cp -r evidencias pacote/evidencias-rodada-2/logs-e-seguranca 2>/dev/null || true
+          cp -r resultados pacote/evidencias-rodada-2/k6 2>/dev/null || true
+          cp -r zap pacote/evidencias-rodada-2/zap 2>/dev/null || true
+          cp -r target/evidencias pacote/evidencias-rodada-2/prints-selenium 2>/dev/null || true
+          cp -r target/surefire-reports pacote/evidencias-rodada-2/surefire 2>/dev/null || true
+          cp -r target/site/jacoco pacote/evidencias-rodada-2/jacoco 2>/dev/null || true
+          cp evidencias/RESUMO.md pacote/evidencias-rodada-2/RESUMO.md 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidencias-rodada-2
+          path: pacote/
+          retention-days: 30
